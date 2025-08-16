@@ -13,6 +13,10 @@ services:
     buildCommand: npm install --prefix client && npm run build --prefix client
     staticPublishPath: client/dist
     autoDeploy: true
+    routes:
+      - type: rewrite
+        source: "/*"
+        destination: "/index.html"
     envVars:
       # IMPORTANT: Set this to your deployed server URL after the server deploys.
       # Example: https://scribal-server.onrender.com
