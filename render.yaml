@@ -7,7 +7,7 @@ services:
     startCommand: node server/dist/index.js
     autoDeploy: true
 
-  - type: static
+  - type: static_site
     name: scribal-client
     plan: free
     buildCommand: npm ci --prefix client && npm run build --prefix client
