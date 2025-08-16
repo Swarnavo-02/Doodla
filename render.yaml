@@ -1,3 +1,4 @@
+version: 1
 services:
   - type: web
     name: scribal-server
@@ -7,8 +8,9 @@ services:
     startCommand: node server/dist/index.js
     autoDeploy: true
 
-  - type: static_site
+  - type: web
     name: scribal-client
+    env: static
     plan: free
     buildCommand: npm ci --prefix client && npm run build --prefix client
     staticPublishPath: client/dist
