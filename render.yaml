@@ -2,18 +2,16 @@ services:
   - type: web
     name: scribal-server
     env: node
-    rootDir: server
     plan: free
-    buildCommand: npm ci && npm run build
-    startCommand: npm start
+    buildCommand: npm ci --prefix server && npm run build --prefix server
+    startCommand: node server/dist/index.js
     autoDeploy: true
 
   - type: static
     name: scribal-client
-    rootDir: client
     plan: free
-    buildCommand: npm ci && npm run build
-    staticPublishPath: dist
+    buildCommand: npm ci --prefix client && npm run build --prefix client
+    staticPublishPath: client/dist
     autoDeploy: true
     envVars:
       # IMPORTANT: Set this to your deployed server URL after the server deploys.
