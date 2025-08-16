@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: scribal-server
+    env: node
+    rootDir: server
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    autoDeploy: true
+
+  - type: static
+    name: scribal-client
+    rootDir: client
+    plan: free
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeploy: true
+    envVars:
+      # IMPORTANT: Set this to your deployed server URL after the server deploys.
+      # Example: https://scribal-server.onrender.com
+      - key: VITE_SERVER_URL
+        value: "https://YOUR-SERVER-URL.onrender.com"

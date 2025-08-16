@@ -32,6 +32,8 @@ export type GameState = {
   // track whether we already revealed at 50% and 25% thresholds
   reveal50Done?: boolean;
   reveal25Done?: boolean;
+  // snapshot of scores at the start of the active turn (after word chosen)
+  turnStartScores?: Record<string, number>;
 };
 
 export type Stroke = {
@@ -41,4 +43,17 @@ export type Stroke = {
   size: number;
   type: 'begin' | 'draw' | 'end' | 'clear';
   erase?: boolean;
+};
+
+// Summary emitted when a turn ends (time up or all guessed)
+export type TurnSummary = {
+  word: string | null;
+  points: Array<{
+    id: string;
+    name: string;
+    delta: number;
+    total: number;
+    guessed: boolean;
+    avatar?: { bg: string; emoji?: string; initial?: string };
+  }>;
 };

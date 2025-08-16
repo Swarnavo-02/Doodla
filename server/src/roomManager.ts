@@ -170,6 +170,8 @@ export class RoomManager {
     room.wordMask = '';
     room.timeLeft = room.settings.turnSeconds;
     this.resetRevealState(room);
+    // clear any previous turn snapshot until word is chosen
+    room.turnStartScores = undefined;
 
     // clear canvas
     this.canvases.set(code, []);
@@ -222,7 +224,40 @@ export class RoomManager {
     room.wordMask = word.replace(/\S/g, '_');
     room.waitingForChoice = false;
     room.wordChoices = [];
+    // snapshot scores at the start of the turn (used to compute per-turn deltas)
+    const snap: Record<string, number> = {};
+    room.players.forEach(p => { snap[p.id] = p.score; });
+    room.turnStartScores = snap;
     // timeLeft already set at nextTurn; timer loop will tick
+    return room;
+  }
+
+  // Prepare rematch: reset scores, rounds, indices; rotate host to next player.
+  rematch(code: string): GameState | null {
+    const room = this.rooms.get(code);
+    if (!room) return null;
+    if (room.players.length === 0) return room;
+    // rotate host to next player after current host
+    const ids = room.players.map(p => p.id);
+    const cur = room.hostId ? ids.indexOf(room.hostId) : -1;
+    const nextIdx = cur >= 0 ? (cur + 1) % ids.length : 0;
+    room.hostId = ids[nextIdx] || room.players[0].id;
+    // reset scores and state
+    room.players.forEach(p => { p.score = 0; p.guessed = false; });
+    room.started = false;
+    room.currentRound = 0;
+    room.currentTurnIndex = -1;
+    room.drawerId = null;
+    room.word = null;
+    room.wordMask = '';
+    room.timeLeft = 0;
+    room.waitingForChoice = false;
+    room.wordChoices = [];
+    this.resetRevealState(room);
+    // clear canvas
+    this.canvases.set(code, []);
+    // clear turn snapshot
+    room.turnStartScores = undefined;
     return room;
   }
 }

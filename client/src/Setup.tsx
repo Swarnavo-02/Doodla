@@ -4,7 +4,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 export default function Setup() {
   const [searchParams] = useSearchParams();
   const [name, setName] = useState('');
-  const [code, setCode] = useState(searchParams.get('room') || '');
+  const [code, setCode] = useState((searchParams.get('room') || '').toUpperCase());
+  const [inviteMode, setInviteMode] = useState<boolean>(!!searchParams.get('room'));
   const [avatar, setAvatar] = useState<{ bg: string; emoji?: string; initial?: string }>({ bg: '#FFE8A3', emoji: '🎉' });
   const navigate = useNavigate();
 
@@ -12,16 +13,25 @@ export default function Setup() {
 
   useEffect(() => {
     try {
-      const savedName = localStorage.getItem('scribal_name');
+      const room = searchParams.get('room');
+      if (room) {
+        setInviteMode(true);
+        setCode(room.toUpperCase());
+        // keep name empty on invite links
+        setName('');
+      } else {
+        const savedName = localStorage.getItem('scribal_name');
+        if (savedName) setName(savedName);
+      }
       const savedAvatar = localStorage.getItem('scribal_avatar');
-      if (savedName) setName(savedName);
       if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
     } catch {}
-  }, []);
+  }, [searchParams]);
 
   function generateCode() {
     const c = Math.random().toString(36).substring(2, 7).toUpperCase();
     setCode(c);
+    setInviteMode(false);
   }
 
   function proceed() {
@@ -60,7 +70,9 @@ export default function Setup() {
           </div>
 
           <div className="section-title" style={{ marginTop: 10 }}>Room</div>
-          <input placeholder="Room code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} />
+          <input placeholder="Room code" value={code}
+                 readOnly={inviteMode}
+                 onChange={e => { if (inviteMode) return; setCode(e.target.value.toUpperCase()); }} />
 
           <button className="button-primary" onClick={proceed} style={{ marginTop: 8 }}>Continue</button>
         </div>

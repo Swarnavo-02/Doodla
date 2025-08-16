@@ -188,3 +188,40 @@ body{margin:0;/* playful doodle-like pattern */
 .score-pop{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);font-family:Nunito,system-ui;font-weight:900;font-size:40px;color:#16a34a;text-shadow:0 6px 14px rgba(22,163,74,.25);animation:popScale .22s ease-out, floatFade 1.45s .22s ease forwards}
 @keyframes popScale{0%{opacity:0;transform:translate(-50%,-50%) scale(.6)}100%{opacity:1;transform:translate(-50%,-50%) scale(1)}}
 @keyframes floatFade{0%{opacity:1;transform:translate(-50%,-50%) translateY(0)}100%{opacity:0;transform:translate(-50%,-50%) translateY(-38px)}}
+
+/* Game Over podium */
+.podium{gap:16px}
+.podium .avatar{display:inline-flex;align-items:center;justify-content:center;font-size:22px;border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)}
+.podium-wrap{display:flex;align-items:flex-end;justify-content:center;gap:12px}
+.podium-1,.podium-2,.podium-3{ text-align:center }
+.podium-1{ transform:translateY(-8px) }
+.podium-1 .avatar{width:64px;height:64px}
+.podium-2 .avatar{width:48px;height:48px}
+.podium-3 .avatar{width:44px;height:44px}
+.podium-name{font-weight:800}
+.podium-rank{color:#374151;font-weight:800}
+.podium-1 .podium-rank{color:#f59e0b} /* gold */
+.podium-2 .podium-rank{color:#9ca3af} /* silver */
+.podium-3 .podium-rank{color:#b45309} /* bronze */
+.podium-points{color:#6b7280}
+
+/* Reactions/Quick chat overlay */
+.overlay-reactions{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:8px;z-index:5;pointer-events:none;align-items:flex-end}
+.reaction-bubble,.quick-bubble{display:inline-flex;align-items:center;gap:10px;max-width:420px;padding:12px 14px;border-radius:16px;border:1px solid var(--border);background:rgba(255,255,255,.96);box-shadow:var(--shadow);font-weight:800;color:#111827;font-size:16px;line-height:1.1;will-change:transform,opacity;transform:translateZ(0);animation:bubbleRise 1.4s cubic-bezier(.22,1,.36,1) forwards}
+.reaction-bubble .from,.quick-bubble .from{font-weight:600;color:#6b7280}
+@keyframes bubbleRise{0%{opacity:0;transform:translate3d(0,16px,0) scale(.98)}15%{opacity:1;transform:translate3d(0,6px,0) scale(1)}70%{opacity:1;transform:translate3d(0,-6px,0)}90%{opacity:1;transform:translate3d(0,-14px,0)}100%{opacity:0;transform:translate3d(0,-22px,0) scale(.995)}}
+
+/* Reaction bar for guessers at colorbar spot */
+.reactbar{position:absolute;left:50%;transform:translateX(-50%);bottom:12px;display:flex;align-items:center;gap:8px}
+.react-trigger{padding:0;border:none;background:transparent;box-shadow:none;cursor:pointer;font-weight:800;font-size:36px;line-height:1;}
+.react-trigger:hover{transform:scale(1.06)}
+.react-panel{position:absolute;bottom:56px;left:50%;transform:translateX(-50%);display:flex;gap:8px;background:#ffffffd9;border:1px solid var(--border);backdrop-filter:saturate(1.2) blur(6px);padding:8px 10px;border-radius:12px;box-shadow:var(--shadow)}
+.react-panel .react-item{padding:6px 8px;border-radius:10px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:18px}
+.react-panel .react-item:hover{background:#f8fafc}
+
+/* Quickbar */
+.quickbar{position:fixed;left:16px;bottom:84px;display:flex;gap:10px;align-items:center;z-index:56;background:#ffffffd9;border:1px solid var(--border);backdrop-filter:saturate(1.2) blur(6px);padding:8px 10px;border-radius:12px;box-shadow:var(--shadow)}
+.quickbar .quick-btn{padding:6px 10px;border-radius:10px;border:1px solid var(--border);background:#fff;cursor:pointer;font-weight:700}
+.quickbar .quick-btn:hover{background:#f8fafc}
+.quick-reactions{display:flex;gap:6px}
+.quick-chats{display:flex;gap:6px}

@@ -10,6 +10,11 @@ type Stroke = {
   erase?: boolean;
 };
 
+type TurnSummary = {
+  word: string | null;
+  points: Array<{ id: string; name: string; delta: number; total: number; guessed: boolean; avatar?: { bg: string; emoji?: string; initial?: string } }>;
+};
+
 type Player = { id: string; name: string; score: number; guessed: boolean; avatar?: { bg: string; emoji?: string; initial?: string } };
 
 type RoomSettings = {
@@ -34,11 +39,14 @@ type GameState = {
   settings: RoomSettings;
 };
 
-const serverUrl = 'http://localhost:3001';
+// Socket.IO server URL: configured via Vite env for production deployments (e.g., Render)
+// Set VITE_SERVER_URL to your server's URL (e.g., https://scribal-server.onrender.com)
+const serverUrl: string = (import.meta as any).env?.VITE_SERVER_URL || 'http://localhost:3001';
 
 export default function App() {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
+  const [inviteMode, setInviteMode] = useState(false);
   const [joined, setJoined] = useState(false);
   const [messages, setMessages] = useState<string[]>([]);
   const [input, setInput] = useState('');
@@ -61,6 +69,16 @@ export default function App() {
   const [maskAnim, setMaskAnim] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; text: string; kind?: 'info' | 'success' | 'error' }[]>([]);
   const [avatar, setAvatar] = useState<{ bg: string; emoji?: string; initial?: string }>({ bg: '#FFE8A3', emoji: '🎉' });
+  const [turnSummary, setTurnSummary] = useState<TurnSummary | null>(null);
+  const summaryTimerRef = useRef<number | null>(null);
+  // Game over modal state
+  const [gameOver, setGameOver] = useState<null | { code: string; players: Array<{ id: string; name: string; total: number; avatar?: { bg: string; emoji?: string; initial?: string } }> }>(null);
+  // Reactions overlay
+  const [reactions, setReactions] = useState<Array<{ id: number; from: string; reaction: string }>>([]);
+  const [quickBubbles, setQuickBubbles] = useState<Array<{ id: number; from: string; text: string }>>([]);
+  const [showReactPanel, setShowReactPanel] = useState<boolean>(false);
+  // After rematch, if I am new host, auto-start once
+  const pendingAutoStartRef = useRef<boolean>(false);
   // delay opener for word choices so confetti/score can be seen
   const wordChoicesTimeoutRef = useRef<number | null>(null);
   // current drawing tool for UI highlighting
@@ -98,10 +116,38 @@ export default function App() {
         guessedThisTurnRef.current = true;
       }
     });
+
+    // Lightweight reactions (cap to latest 4 for performance)
+    socket.on('reaction', ({ from, reaction }: { from: string; reaction: string }) => {
+      const id = Date.now() + Math.random();
+      setReactions(prev => {
+        const next = [...prev, { id, from, reaction }];
+        return next.length > 4 ? next.slice(next.length - 4) : next;
+      });
+      setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 1400);
+    });
+    // Quick chat
+    socket.on('quick_chat', ({ from, text }: { from: string; text: string }) => {
+      const id = Date.now() + Math.random();
+      setQuickBubbles(prev => {
+        const next = [...prev, { id, from, text }];
+        return next.length > 4 ? next.slice(next.length - 4) : next;
+      });
+      setTimeout(() => setQuickBubbles(prev => prev.filter(r => r.id !== id)), 1400);
+    });
     socket.on('chat_message', ({ from, text }: { from: string; text: string }) => setMessages(prev => [...prev, `${from}: ${text}`]));
     socket.on('state_update', (st: GameState) => {
       setState(st);
       setTimer(st.timeLeft);
+      // If we requested Play Again, auto-start when I become the host
+      if (pendingAutoStartRef.current) {
+        if (!st.started && st.hostId === (socket.id || '')) {
+          socket.emit('start_game');
+          pendingAutoStartRef.current = false;
+        } else if (st.started) {
+          pendingAutoStartRef.current = false;
+        }
+      }
       // ensure participants map has latest names
       setParticipants(prev => {
         const next = { ...prev } as Record<string, { name: string; muted: boolean; speaking: boolean }>;
@@ -157,6 +203,23 @@ export default function App() {
       clearCanvas();
       strokes.forEach(applyStroke);
     });
+    // Game over summary
+    socket.on('game_over', (payload: { code: string; players: Array<{ id: string; name: string; total: number; avatar?: { bg: string; emoji?: string; initial?: string } }> }) => {
+      setGameOver(payload);
+    });
+    // End-of-turn summary
+    socket.on('turn_end', (summary: TurnSummary) => {
+      setTurnSummary(summary);
+      if (summaryTimerRef.current) {
+        clearTimeout(summaryTimerRef.current);
+        summaryTimerRef.current = null;
+      }
+      // Keep the summary visible a bit longer
+      summaryTimerRef.current = window.setTimeout(() => {
+        setTurnSummary(null);
+        summaryTimerRef.current = null;
+      }, 8200);
+    });
 
     // Voice signaling (registered after socket exists)
     socket.on('voice_user_joined', async (id: string) => {
@@ -194,18 +257,21 @@ export default function App() {
         wordChoicesTimeoutRef.current = null;
       }, delayMs);
     });
-    // Load profile from localStorage
-    try {
-      const savedName = localStorage.getItem('scribal_name');
-      const savedAvatar = localStorage.getItem('scribal_avatar');
-      if (savedName) setName(savedName);
-      if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
-    } catch {}
-    // Prefill room code from URL query
+    // Load profile from localStorage (skip name if invite link is present)
     try {
       const usp = new URLSearchParams(window.location.search);
       const roomParam = usp.get('room');
-      if (roomParam) setCode(roomParam.toUpperCase());
+      if (roomParam) {
+        setInviteMode(true);
+        setCode(roomParam.toUpperCase());
+        // ensure name starts empty for invite links
+        setName('');
+      } else {
+        const savedName = localStorage.getItem('scribal_name');
+        if (savedName) setName(savedName);
+      }
+      const savedAvatar = localStorage.getItem('scribal_avatar');
+      if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
     } catch {}
     return () => {
       // cleanup any pending choice opener
@@ -213,10 +279,30 @@ export default function App() {
         clearTimeout(wordChoicesTimeoutRef.current);
         wordChoicesTimeoutRef.current = null;
       }
+      socket.off('game_over');
+      socket.off('reaction');
+      socket.off('quick_chat');
       socket.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Emit a rematch request (host only on server)
+  function playAgain() {
+    pendingAutoStartRef.current = true;
+    socket.emit('rematch');
+    setGameOver(null);
+  }
+
+  // Send a reaction
+  function sendReaction(emoji: string) {
+    socket.emit('reaction', emoji);
+  }
+
+  // Send a quick chat
+  function sendQuick(text: string) {
+    socket.emit('quick_chat', text);
+  }
 
   // Countdown for the word-choice modal (always 10s visual)
   useEffect(() => {
@@ -577,17 +663,22 @@ export default function App() {
     setCode(out);
   }
 
-  // Parse ?room=CODE for hostable links
+  // Parse ?room=CODE for hostable links (ensure uppercase and invite flag)
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const r = params.get('room');
-    if (r) setCode(r);
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const r = params.get('room');
+      if (r) {
+        setInviteMode(true);
+        setCode(r.toUpperCase());
+      }
+    } catch {}
   }, []);
 
   function copyInvite() {
     const room = state?.code || code;
     if (!room) return;
-    const url = `${window.location.origin}?room=${room}`;
+    const url = `${window.location.origin}/setup?room=${room}`;
     navigator.clipboard.writeText(url);
     showToast('Invite link copied!', 'success');
   }
@@ -670,7 +761,9 @@ export default function App() {
           <div className="form">
             <div className="section-title">Join Room</div>
             <input placeholder="Your name" value={name} maxLength={9} onChange={e => setName(e.target.value.slice(0, 9))} />
-            <input placeholder="Room code" value={code} onChange={e => setCode(e.target.value)} />
+            <input placeholder="Room code" value={code}
+                   readOnly={inviteMode}
+                   onChange={e => { if (inviteMode) return; setCode(e.target.value.toUpperCase()); }} />
             {/* Avatar picker */}
             <div style={{ display:'grid', gap:8 }}>
               <div className="section-title">Choose Avatar</div>
@@ -725,7 +818,9 @@ export default function App() {
             </div>
 
             <div>
-              <button className="button-primary" onClick={startGame} disabled={!state}>Start Game</button>
+              {state && state.hostId === socket.id && !state.started && (
+                <button className="button-primary" onClick={startGame}>Start Game</button>
+              )}
             </div>
 
             {/* Host Settings */}
@@ -796,6 +891,35 @@ export default function App() {
             <button onClick={clearAll} title="Clear Canvas">Clear</button>
           </div>
         )}
+        {state && state.drawerId !== socket.id && (
+          <div className="reactbar">
+            <button className="react-trigger" onClick={() => setShowReactPanel(v => !v)} title="Reactions" aria-label="Reactions">❤️</button>
+            {showReactPanel && (
+              <div className="react-panel">
+                <div style={{ display:'flex', gap:8 }}>
+                  {['🎉','👏','🔥','😂','😮','👍','❤️','😢','😡','🤯'].map(em => (
+                    <button key={em} className="react-item" onClick={() => { sendReaction(em); setShowReactPanel(false); }} title={em}>{em}</button>
+                  ))}
+                </div>
+                <div style={{ width:1, background:'var(--border)', margin:'0 8px' }} />
+                <div style={{ display:'flex', gap:6 }}>
+                  {['GG','Nice!','Wow!','Hint?','BRB'].map(t => (
+                    <button key={t} className="react-item" onClick={() => { sendQuick(t); setShowReactPanel(false); }} title={t}>{t}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {/* Reactions and quick chat overlay (relative to canvas) */}
+        <div className="overlay-reactions" aria-live="polite" aria-relevant="additions">
+          {reactions.map(r => (
+            <div key={r.id} className="reaction-bubble">{r.reaction} <span className="from">{r.from}</span></div>
+          ))}
+          {quickBubbles.map(b => (
+            <div key={b.id} className="quick-bubble"><span className="from">{b.from}:</span> {b.text}</div>
+          ))}
+        </div>
       </main>
 
       <section className="chat">
@@ -813,6 +937,105 @@ export default function App() {
           <button onClick={send} disabled={!!(state && state.drawerId === socket.id)}>Send</button>
         </div>
       </section>
+
+      {/* Game Over Modal with podium and rematch */}
+      {gameOver && (
+        <div className="modal-backdrop" onClick={() => setGameOver(null)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Game Over</div>
+            </div>
+            <div style={{ display:'grid', gap:12 }}>
+              {(() => {
+                const sorted = [...gameOver.players].sort((a,b)=> b.total - a.total);
+                const top = sorted.slice(0,3);
+                return (
+                  <div className="podium podium-wrap">
+                    {top[1] && (
+                      <div className="podium-2">
+                        <div className="avatar" style={{ background: top[1].avatar?.bg || '#eee' }}>{top[1].avatar?.emoji || (top[1].name[0] || '🙂')}</div>
+                        <div className="podium-name">{top[1].name}</div>
+                        <div className="podium-rank">🥈 2nd</div>
+                        <div className="podium-points">{top[1].total} pts</div>
+                      </div>
+                    )}
+                    {top[0] && (
+                      <div className="podium-1">
+                        <div className="avatar" style={{ background: top[0].avatar?.bg || '#eee' }}>{top[0].avatar?.emoji || (top[0].name[0] || '🙂')}</div>
+                        <div className="podium-name">{top[0].name}</div>
+                        <div className="podium-rank">🥇 1st</div>
+                        <div className="podium-points">{top[0].total} pts</div>
+                      </div>
+                    )}
+                    {top[2] && (
+                      <div className="podium-3">
+                        <div className="avatar" style={{ background: top[2].avatar?.bg || '#eee' }}>{top[2].avatar?.emoji || (top[2].name[0] || '🙂')}</div>
+                        <div className="podium-name">{top[2].name}</div>
+                        <div className="podium-rank">🥉 3rd</div>
+                        <div className="podium-points">{top[2].total} pts</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+              <div className="list" style={{ padding:12 }}>
+                {[...gameOver.players].sort((a,b)=> b.total - a.total).map((p, i) => (
+                  <div key={p.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 4px' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <span className={`rank rank-${i+1}`}>{i+1}</span>
+                      <span className="avatar small" style={{ background: p.avatar?.bg || '#eee' }}>{p.avatar?.emoji || (p.name ? p.name[0].toUpperCase() : '🙂')}</span>
+                      <span style={{ fontWeight:700 }}>{p.name}</span>
+                    </div>
+                    <div style={{ color:'#6b7280' }}>{p.total} pts</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+                {state && state.hostId === socket.id && (
+                  <button className="button-primary" onClick={playAgain}>Play Again</button>
+                )}
+                <button className="invite-btn" onClick={() => setGameOver(null)}>Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* End-of-turn Summary Modal */}
+      {turnSummary && (
+        <div className="modal-backdrop" onClick={() => setTurnSummary(null)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Round Over</div>
+            </div>
+            <div style={{ display:'grid', gap:10 }}>
+              <div><strong>Correct word:</strong> {turnSummary.word || '(unknown)'}</div>
+              <div className="list" style={{ padding:12 }}>
+                {[...turnSummary.points].sort((a,b)=> b.delta - a.delta).map(p => (
+                  <div key={p.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 4px' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <span className="avatar small" style={{ background: p.avatar?.bg || '#eee' }}>{p.avatar?.emoji || (p.name ? p.name[0].toUpperCase() : '🙂')}</span>
+                      <span style={{ fontWeight:800 }}>{p.name}</span>
+                      {p.guessed && <span className="chip" style={{ marginLeft:6 }}>guessed</span>}
+                    </div>
+                    <div style={{ display:'flex', alignItems:'baseline', gap:8 }}>
+                      <span style={{ fontWeight:800, color: p.delta>0 ? '#16a34a' : '#6b7280' }}>{p.delta>0?`+${p.delta}`: '+0'}</span>
+                      <span style={{ fontSize:12, color:'#6b7280' }}>total {p.total}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:'flex', justifyContent:'flex-end' }}>
+                <button className="invite-btn" onClick={() => setTurnSummary(null)}>OK</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      
+
+      {/* Quickbar removed per request; reactions and quick chats are in the bottom-center panel for guessers. */}
 
       {/* Voice Dock */}
       <div className="voice-dock">

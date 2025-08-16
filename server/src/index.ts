@@ -3,7 +3,7 @@ import http from 'http';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import { RoomManager } from './roomManager';
-import { Player, Stroke } from './types';
+import { Player, Stroke, TurnSummary } from './types';
 
 const app = express();
 app.use(cors());
@@ -13,7 +13,7 @@ const io = new Server(server, {
   cors: { origin: '*'}
 });
 
-const PORT = 3001;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const rooms = new RoomManager();
 
 io.on('connection', (socket) => {
@@ -84,9 +84,23 @@ io.on('connection', (socket) => {
   });
 
   socket.on('start_game', () => {
-    if (!currentRoom) return;
+    if (!currentRoom || !player) return;
+    const st = rooms.createOrGetRoom(currentRoom);
+    // Only host can start and only if not already started
+    if (st.hostId !== socket.id) return;
+    if (st.started) return;
     const state = rooms.nextTurn(currentRoom);
     if (state) {
+      // if game just ended, emit game_over summary
+      if (!state.started) {
+        const final = rooms.createOrGetRoom(currentRoom);
+        io.to(currentRoom).emit('game_over', {
+          code: currentRoom,
+          players: [...final.players].map(p => ({ id: p.id, name: p.name, total: p.score, avatar: p.avatar }))
+        });
+        io.to(currentRoom).emit('state_update', final);
+        return;
+      }
       // send a state update (without revealing choices); choices are only known to drawer via separate event
       io.to(currentRoom).emit('state_update', { ...state, wordChoices: undefined });
       // clear all clients' canvases for the new turn
@@ -123,12 +137,34 @@ io.on('connection', (socket) => {
       const state = rooms.createOrGetRoom(currentRoom);
       const nonDrawer = state.players.filter(p => p.id !== state.drawerId);
       if (nonDrawer.length > 0 && nonDrawer.every(p => p.guessed)) {
+        // Build and emit turn summary
+        const summary: TurnSummary = {
+          word: state.word,
+          points: state.players.map(p => ({
+            id: p.id,
+            name: p.name,
+            delta: (state.turnStartScores?.[p.id] != null ? p.score - (state.turnStartScores![p.id]) : 0),
+            total: p.score,
+            guessed: !!p.guessed,
+            avatar: p.avatar
+          }))
+        };
+        io.to(currentRoom).emit('turn_end', summary);
         io.to(currentRoom).emit('system_message', `All players guessed! Next turn.`);
         const st = rooms.nextTurn(currentRoom);
-        io.to(currentRoom).emit('state_update', st);
         if (st) {
-          io.to(currentRoom).emit('stroke', { x: 0, y: 0, color: '', size: 0, type: 'clear' });
-          if (st.drawerId) io.to(st.drawerId).emit('word_choices', st.wordChoices || []);
+          if (!st.started) {
+            const final = rooms.createOrGetRoom(currentRoom);
+            io.to(currentRoom).emit('game_over', {
+              code: currentRoom,
+              players: [...final.players].map(p => ({ id: p.id, name: p.name, total: p.score, avatar: p.avatar }))
+            });
+            io.to(currentRoom).emit('state_update', final);
+          } else {
+            io.to(currentRoom).emit('state_update', st);
+            io.to(currentRoom).emit('stroke', { x: 0, y: 0, color: '', size: 0, type: 'clear' });
+            if (st.drawerId) io.to(st.drawerId).emit('word_choices', st.wordChoices || []);
+          }
         }
       }
     } else {
@@ -143,6 +179,27 @@ io.on('connection', (socket) => {
       io.to(currentRoom).emit('state_update', rooms.createOrGetRoom(currentRoom));
     }
   });
+
+  socket.on('rematch', () => {
+    if (!currentRoom || !player) return;
+    const st = rooms.createOrGetRoom(currentRoom);
+    if (st.hostId !== socket.id) return; // only host
+    rooms.rematch(currentRoom);
+    const fresh = rooms.createOrGetRoom(currentRoom);
+    io.to(currentRoom).emit('state_update', fresh);
+    const hostName = fresh.players.find(p => p.id === fresh.hostId)?.name || 'Host';
+    io.to(currentRoom).emit('system_message', `Rematch ready! ${hostName} is the new host. Press Start Game to begin.`);
+  });
+
+  socket.on('reaction', (reaction: string) => {
+    if (!currentRoom || !player) return;
+    io.to(currentRoom).emit('reaction', { from: player.name, reaction });
+  });
+
+  socket.on('quick_chat', (text: string) => {
+    if (!currentRoom || !player) return;
+    io.to(currentRoom).emit('quick_chat', { from: player.name, text });
+  });
 });
 
 // turn timer tick
@@ -156,12 +213,34 @@ setInterval(() => {
       io.to(code).emit('state_update', rooms.createOrGetRoom(code));
     }
     if (state.timeLeft <= 0) {
+      // Emit summary before advancing
+      const summary: TurnSummary = {
+        word: state.word,
+        points: state.players.map(p => ({
+          id: p.id,
+          name: p.name,
+          delta: (state.turnStartScores?.[p.id] != null ? p.score - (state.turnStartScores![p.id]) : 0),
+          total: p.score,
+          guessed: !!p.guessed,
+          avatar: p.avatar
+        }))
+      };
+      io.to(code).emit('turn_end', summary);
       const st = rooms.nextTurn(code);
-      io.to(code).emit('system_message', 'Time up! Next turn.');
       if (st) {
-        io.to(code).emit('state_update', { ...st, wordChoices: undefined });
-        io.to(code).emit('stroke', { x: 0, y: 0, color: '', size: 0, type: 'clear' });
-        if (st.drawerId) io.to(st.drawerId).emit('word_choices', st.wordChoices || []);
+        if (!st.started) {
+          const final = rooms.createOrGetRoom(code);
+          io.to(code).emit('game_over', {
+            code,
+            players: [...final.players].map(p => ({ id: p.id, name: p.name, total: p.score, avatar: p.avatar }))
+          });
+          io.to(code).emit('state_update', final);
+        } else {
+          io.to(code).emit('system_message', 'Time up! Next turn.');
+          io.to(code).emit('state_update', { ...st, wordChoices: undefined });
+          io.to(code).emit('stroke', { x: 0, y: 0, color: '', size: 0, type: 'clear' });
+          if (st.drawerId) io.to(st.drawerId).emit('word_choices', st.wordChoices || []);
+        }
       }
     } else {
       io.to(code).emit('timer', state.timeLeft);
@@ -172,5 +251,6 @@ setInterval(() => {
 app.get('/', (_req, res) => res.send('Scribal server running'));
 
 server.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+  const host = process.env.RENDER ? '0.0.0.0' : 'localhost';
+  console.log(`Server listening on http://${host}:${PORT}`);
 });
