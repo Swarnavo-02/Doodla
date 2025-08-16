@@ -3,15 +3,14 @@ services:
   - type: web
     name: scribal-server
     env: node
-    plan: free
-    buildCommand: npm ci --prefix server && npm run build --prefix server
+    buildCommand: npm install --prefix server && npm run build --prefix server
     startCommand: node server/dist/index.js
     autoDeploy: true
 
   - type: web
     name: scribal-client
     env: static
-    buildCommand: npm ci --prefix client && npm run build --prefix client
+    buildCommand: npm install --prefix client && npm run build --prefix client
     staticPublishPath: client/dist
     autoDeploy: true
     envVars:
