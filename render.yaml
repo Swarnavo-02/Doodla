@@ -1,24 +1,10 @@
 version: 1
 services:
   - type: web
-    name: scribal-server
+    name: scribal
     env: node
-    buildCommand: npm install --prefix server && npm run build --prefix server
-    startCommand: node server/dist/index.js
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
     autoDeploy: true
-
-  - type: web
-    name: scribal-client
-    env: static
-    buildCommand: npm install --prefix client && npm run build --prefix client
-    staticPublishPath: client/dist
-    autoDeploy: true
-    routes:
-      - type: rewrite
-        source: "/*"
-        destination: "/index.html"
-    envVars:
-      # IMPORTANT: Set this to your deployed server URL after the server deploys.
-      # Example: https://scribal-server.onrender.com
-      - key: VITE_SERVER_URL
-        value: "https://YOUR-SERVER-URL.onrender.com"
+    healthCheckPath: /

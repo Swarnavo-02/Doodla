@@ -4,6 +4,7 @@ import cors from 'cors';
 import { Server } from 'socket.io';
 import { RoomManager } from './roomManager';
 import { Player, Stroke, TurnSummary } from './types';
+import path from 'path';
 
 const app = express();
 app.use(cors());
@@ -81,6 +82,12 @@ io.on('connection', (socket) => {
   socket.on('voice_toggle', ({ muted }: { muted: boolean }) => {
     if (!currentRoom) return;
     io.to(currentRoom).emit('voice_toggle', { id: socket.id, muted });
+  });
+
+  // Explicit voice leave (user turned mic off). Let others tear down.
+  socket.on('voice_leave', () => {
+    if (!currentRoom) return;
+    socket.to(currentRoom).emit('voice_user_left', socket.id);
   });
 
   socket.on('start_game', () => {
@@ -175,6 +182,8 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     if (currentRoom && player) {
+      // notify voice peers to clean up
+      socket.to(currentRoom).emit('voice_user_left', socket.id);
       rooms.leaveRoom(currentRoom, player.id);
       io.to(currentRoom).emit('state_update', rooms.createOrGetRoom(currentRoom));
     }
@@ -248,7 +257,15 @@ setInterval(() => {
   }
 }, 1000);
 
-app.get('/', (_req, res) => res.send('Scribal server running'));
+// Serve built client when available (single-origin deploy/dev)
+try {
+  const distPath = path.resolve(__dirname, '../../client/dist');
+  app.use(express.static(distPath));
+  // SPA fallback
+  app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+} catch {
+  app.get('/', (_req, res) => res.send('Scribal server running'));
+}
 
 server.listen(PORT, () => {
   const host = process.env.RENDER ? '0.0.0.0' : 'localhost';

@@ -39,9 +39,14 @@ type GameState = {
   settings: RoomSettings;
 };
 
-// Socket.IO server URL: configured via Vite env for production deployments (e.g., Render)
-// Set VITE_SERVER_URL to your server's URL (e.g., https://scribal-server.onrender.com)
-const serverUrl: string = (import.meta as any).env?.VITE_SERVER_URL || 'http://localhost:3001';
+// Socket.IO server URL
+// Prefer VITE_SERVER_URL when explicitly provided; otherwise use same-origin (works when server serves client)
+const serverUrl: string = (() => {
+  const envUrl = (import.meta as any).env?.VITE_SERVER_URL as string | undefined;
+  if (envUrl && envUrl.trim()) return envUrl;
+  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
+  return 'http://localhost:3001';
+})();
 
 export default function App() {
   const [name, setName] = useState('');
@@ -95,6 +100,9 @@ export default function App() {
   // local strokes for undo (only for drawer's own emitted ops)
   const localStrokesRef = useRef<Stroke[]>([]);
   const opStartsRef = useRef<number[]>([]);
+  // throttle stroke emissions to animation frames
+  const strokePendingRef = useRef<Stroke | null>(null);
+  const strokeRafRef = useRef<number | null>(null);
 
   // Voice refs
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -104,7 +112,15 @@ export default function App() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const uiAudioCtxRef = useRef<AudioContext | null>(null);
 
-  const socket: Socket = useMemo(() => io(serverUrl), []);
+  const socket: Socket = useMemo(() => io(serverUrl, {
+    transports: ['websocket'],
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 500,
+    reconnectionDelayMax: 2000,
+    timeout: 10000,
+    withCredentials: false
+  } as any), []);
 
   useEffect(() => {
     socket.on('connect', () => {});
@@ -225,6 +241,11 @@ export default function App() {
     socket.on('voice_user_joined', async (id: string) => {
       if (!localStreamRef.current) return;
       await createPeerConnection(id, true);
+    });
+    socket.on('voice_user_left', (id: string) => {
+      // tear down remote audio and peer
+      cleanupPeer(id);
+      setParticipants(prev => prev[id] ? { ...prev, [id]: { ...prev[id], speaking: false, muted: true } } : prev);
     });
     socket.on('voice_offer', async ({ from, sdp }: { from: string; sdp: RTCSessionDescriptionInit }) => {
       await createPeerConnection(from, false, sdp);
@@ -400,22 +421,19 @@ export default function App() {
     ensureAudioContext().then(ctx => {
       const src = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 128; // lighter CPU
       src.connect(analyser);
       analysersRef.current.set(id, analyser);
       const data = new Uint8Array(analyser.frequencyBinCount);
-      const loop = () => {
-        if (!analysersRef.current.has(id)) return;
+      const interval = setInterval(() => {
+        if (!analysersRef.current.has(id)) { clearInterval(interval); return; }
         analyser.getByteTimeDomainData(data);
-        // simple volume estimate
         let sum = 0;
         for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
         const rms = Math.sqrt(sum / data.length);
-        const speaking = rms > 0.05;
+        const speaking = rms > 0.04; // slightly more sensitive
         setParticipants(prev => prev[id] ? { ...prev, [id]: { ...prev[id], speaking } } : prev);
-        requestAnimationFrame(loop);
-      };
-      loop();
+      }, 80);
     });
   }
 
@@ -426,6 +444,20 @@ export default function App() {
 
     pc.onicecandidate = (e) => {
       if (e.candidate) socket.emit('voice_ice', { to: peerId, candidate: e.candidate });
+    };
+    pc.onconnectionstatechange = async () => {
+      const st = pc.connectionState;
+      if (st === 'failed' || st === 'disconnected') {
+        // try ICE restart once
+        try {
+          const offer = await pc.createOffer({ iceRestart: true });
+          await pc.setLocalDescription(offer);
+          socket.emit('voice_offer', { to: peerId, sdp: offer });
+        } catch {}
+      }
+      if (st === 'closed') {
+        cleanupPeer(peerId);
+      }
     };
     pc.ontrack = (ev) => {
       let audio = remoteAudioRefs.current.get(peerId);
@@ -438,6 +470,8 @@ export default function App() {
         document.body.appendChild(audio);
       }
       audio.srcObject = ev.streams[0];
+      // Prompt playback for some browsers' autoplay policies
+      (audio as HTMLMediaElement).play?.().catch(() => {});
       // speaking detection for remote
       attachSpeakingDetector(peerId, ev.streams[0]);
       // mark participant presence
@@ -466,7 +500,16 @@ export default function App() {
   async function toggleMic() {
     try {
       if (!micOn) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 48000,
+            sampleSize: 16
+          }
+        });
         localStreamRef.current = stream;
         setMicOn(true);
         // speaking detection for self
@@ -483,14 +526,30 @@ export default function App() {
         localStreamRef.current = null;
         setMicOn(false);
         // close peer connections but keep pills
-        peersRef.current.forEach((pc) => pc.close());
+        peersRef.current.forEach((pc, id) => { try { pc.close(); } catch {} cleanupPeer(id); });
         peersRef.current.clear();
         analysersRef.current.clear();
         socket.emit('voice_toggle', { muted: true });
+        socket.emit('voice_leave');
       }
     } catch (e) {
       showToast('Microphone permission denied or unavailable.', 'error');
     }
+  }
+
+  function cleanupPeer(id: string) {
+    const pc = peersRef.current.get(id);
+    if (pc) {
+      try { pc.onicecandidate = null; pc.ontrack = null; pc.onconnectionstatechange = null; pc.close(); } catch {}
+    }
+    peersRef.current.delete(id);
+    const audio = remoteAudioRefs.current.get(id);
+    if (audio) {
+      try { (audio.srcObject as MediaStream | null)?.getTracks().forEach(t => t.stop()); } catch {}
+      audio.remove();
+    }
+    remoteAudioRefs.current.delete(id);
+    analysersRef.current.delete(id);
   }
 
   function applyStroke(s: Stroke) {
@@ -586,9 +645,7 @@ export default function App() {
       opStartsRef.current.push(localStrokesRef.current.length);
     }
     drawing.current = true;
-    applyStroke(s);
-    socket.emit('stroke', s);
-    localStrokesRef.current.push(s);
+    scheduleStroke(s);
   }
 
   function handleMouseUp() {
@@ -597,6 +654,20 @@ export default function App() {
     const endS = { x: 0, y: 0, color: '', size: 0, type: 'end' } as Stroke;
     socket.emit('stroke', endS);
     localStrokesRef.current.push(endS);
+  }
+
+  function scheduleStroke(s: Stroke) {
+    strokePendingRef.current = s;
+    if (strokeRafRef.current != null) return;
+    strokeRafRef.current = requestAnimationFrame(() => {
+      const sp = strokePendingRef.current;
+      strokePendingRef.current = null;
+      strokeRafRef.current = null;
+      if (!sp) return;
+      applyStroke(sp);
+      socket.emit('stroke', sp);
+      localStrokesRef.current.push(sp);
+    });
   }
 
   function clearCanvas() {
