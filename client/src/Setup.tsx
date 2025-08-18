@@ -9,20 +9,21 @@ export default function Setup() {
   const [avatar, setAvatar] = useState<{ bg: string; emoji?: string; initial?: string }>({ bg: '#FFE8A3', emoji: '🎉' });
   const navigate = useNavigate();
 
-  const EMOJI_SET = useMemo(() => ['🎉','😎','🤖','🐱','🐶','🦊','🐼','🐵','🐧','🦄','🐯','🐸','🐨','🦁','🐰','🐹','🐻','🐤','🐙','🐳'], []);
+  const EMOJI_SET = useMemo(() => ['🐷','😎','🤖','🐱','🐶','🦊','🐼','🐵','🐧','🦄','🐯','🐸','🐨','🦁','🐰','🐹','🐻','🐤','🐙','🐳'], []);
 
   useEffect(() => {
     try {
+      const savedName = localStorage.getItem('scribal_name');
+      if (savedName) setName(savedName);
+
       const room = searchParams.get('room');
       if (room) {
         setInviteMode(true);
         setCode(room.toUpperCase());
-        // keep name empty on invite links
-        setName('');
-      } else {
-        const savedName = localStorage.getItem('scribal_name');
-        if (savedName) setName(savedName);
+        // If no saved name, keep empty to force user to enter; otherwise keep saved
+        if (!savedName) setName('');
       }
+
       const savedAvatar = localStorage.getItem('scribal_avatar');
       if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
     } catch {}
@@ -55,7 +56,7 @@ export default function Setup() {
       <div style={{ display: 'grid', placeItems: 'center', padding: 24 }}>
         <div className="form" style={{ width: 420, maxWidth: '94vw' }}>
           <div className="section-title">Profile</div>
-          <input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
+          <input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} autoFocus={!name} />
           <div style={{ display:'grid', gap:8 }}>
             <div className="section-title">Choose Avatar</div>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
@@ -73,8 +74,10 @@ export default function Setup() {
           <input placeholder="Room code" value={code}
                  readOnly={inviteMode}
                  onChange={e => { if (inviteMode) return; setCode(e.target.value.toUpperCase()); }} />
-
-          <button className="button-primary" onClick={proceed} style={{ marginTop: 8 }}>Continue</button>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:8 }}>
+            <button className="btn btn-primary" onClick={proceed} disabled={!name || !code}>Continue</button>
+            {!name || !code ? <small style={{ color:'#94a3b8' }}>Enter name and room code</small> : null}
+          </div>
         </div>
       </div>
     </div>

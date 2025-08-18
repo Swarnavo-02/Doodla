@@ -40,11 +40,20 @@ type GameState = {
 };
 
 // Socket.IO server URL
-// Prefer VITE_SERVER_URL when explicitly provided; otherwise use same-origin (works when server serves client)
+// Prefer VITE_SERVER_URL when explicitly provided; otherwise use Node server in dev (3001)
+// and same-origin only when server is actually serving the client (production).
 const serverUrl: string = (() => {
   const envUrl = (import.meta as any).env?.VITE_SERVER_URL as string | undefined;
-  if (envUrl && envUrl.trim()) return envUrl;
-  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
+  if (envUrl && envUrl.trim()) return envUrl.trim();
+  if (typeof window !== 'undefined') {
+    const loc = window.location;
+    // If running via Vite dev (5173) or localhost, default Socket.IO to 3001
+    if (loc.port === '5173' || loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') {
+      return 'http://localhost:3001';
+    }
+    // Fallback to same-origin (useful when server serves client in production)
+    if ((loc as any).origin) return (loc as any).origin as string;
+  }
   return 'http://localhost:3001';
 })();
 
@@ -53,6 +62,7 @@ export default function App() {
   const [code, setCode] = useState('');
   const [inviteMode, setInviteMode] = useState(false);
   const [joined, setJoined] = useState(false);
+  const [joining, setJoining] = useState(false);
   const [messages, setMessages] = useState<string[]>([]);
   const [input, setInput] = useState('');
   const [state, setState] = useState<GameState | null>(null);
@@ -60,6 +70,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [uiMuted, setUiMuted] = useState(false);
   const [micOn, setMicOn] = useState(false);
+  const [overlayClosing, setOverlayClosing] = useState(false);
   // track guessed + scores for confetti at turn end
   const prevDrawerRef = useRef<string | null>(null);
   const prevScoresRef = useRef<Record<string, number>>({});
@@ -70,12 +81,29 @@ export default function App() {
   const [participants, setParticipants] = useState<Record<string, { name: string; muted: boolean; speaking: boolean }>>({});
   const [wordChoices, setWordChoices] = useState<string[]>([]);
   const [choiceTimer, setChoiceTimer] = useState<number>(10);
+
+  // Detect invite link (?room=CODE) and prefill
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const r = params.get('room');
+      if (r) {
+        setInviteMode(true);
+        setCode(r.toUpperCase());
+      } else {
+        setInviteMode(false);
+      }
+    } catch {}
+  }, []);
   const autoPickRef = useRef(false);
   const [maskAnim, setMaskAnim] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; text: string; kind?: 'info' | 'success' | 'error' }[]>([]);
   const [avatar, setAvatar] = useState<{ bg: string; emoji?: string; initial?: string }>({ bg: '#FFE8A3', emoji: '🎉' });
   const [turnSummary, setTurnSummary] = useState<TurnSummary | null>(null);
   const summaryTimerRef = useRef<number | null>(null);
+  // Refs mirroring state to avoid stale closures in socket callbacks
+  const waitingForChoiceRef = useRef<boolean>(false);
+  const startedRef = useRef<boolean>(false);
   // Game over modal state
   const [gameOver, setGameOver] = useState<null | { code: string; players: Array<{ id: string; name: string; total: number; avatar?: { bg: string; emoji?: string; initial?: string } }> }>(null);
   // Reactions overlay
@@ -88,7 +116,7 @@ export default function App() {
   const wordChoicesTimeoutRef = useRef<number | null>(null);
   // current drawing tool for UI highlighting
   const [currentTool, setCurrentTool] = useState<'pen' | 'eraser' | 'fill'>('pen');
-  const EMOJI_SET = ['🎉','😎','🤖','🐱','🐶','🦊','🐼','🐵','🐧','🦄','🐯','🐸','🐨','🦁','🐰','🐹','🐻','🐤','🐙','🐳'];
+  const EMOJI_SET = ['🐷','😎','🤖','🐱','🐶','🦊','🐼','🐵','🐧','🦄','🐯','🐸','🐨','🦁','🐰','🐹','🐻','🐤','🐖','🐳'];
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -124,7 +152,13 @@ export default function App() {
 
   useEffect(() => {
     socket.on('connect', () => {});
-    socket.on('error_message', (m: string) => showToast(m, 'error'));
+    socket.on('error_message', (m: string) => {
+      // reset pending join on failure
+      setJoining(false);
+      setOverlayClosing(false);
+      setJoined(false);
+      showToast(m, 'error');
+    });
     socket.on('system_message', (text: string) => {
       setMessages(prev => [...prev, `[System] ${text}`]);
       // Mark that I guessed correctly (used to show end-of-turn confetti only for me)
@@ -155,6 +189,24 @@ export default function App() {
     socket.on('state_update', (st: GameState) => {
       setState(st);
       setTimer(st.timeLeft);
+      waitingForChoiceRef.current = !!st.waitingForChoice;
+      startedRef.current = !!st.started;
+      // If we were attempting to join, confirm membership
+      if (joining) {
+        const amIn = !!st.players.find(p => p.id === (socket.id || ''));
+        if (amIn) {
+          setJoining(false);
+        }
+      }
+      // If we are entering waitingForChoice, cancel any local pending strokes immediately
+      if (waitingForChoiceRef.current) {
+        drawing.current = false;
+        if (strokeRafRef.current != null) {
+          cancelAnimationFrame(strokeRafRef.current);
+          strokeRafRef.current = null;
+        }
+        strokePendingRef.current = null;
+      }
       // If we requested Play Again, auto-start when I become the host
       if (pendingAutoStartRef.current) {
         if (!st.started && st.hostId === (socket.id || '')) {
@@ -192,6 +244,16 @@ export default function App() {
         // New turn: reset per-turn flags
         guessedThisTurnRef.current = false;
         prevMyGuessedRef.current = false;
+        // Also reset local stroke history to ensure undo only affects current turn
+        localStrokesRef.current = [];
+        opStartsRef.current = [];
+        clearCanvas();
+        // cancel any pending stroke
+        if (strokeRafRef.current != null) {
+          cancelAnimationFrame(strokeRafRef.current);
+          strokeRafRef.current = null;
+        }
+        strokePendingRef.current = null;
       }
       if (me) {
         const prev = prevScoresRef.current[me.id] ?? me.score;
@@ -214,8 +276,22 @@ export default function App() {
       redraw();
     });
     socket.on('timer', (t: number) => setTimer(t));
-    socket.on('stroke', (s: Stroke) => applyStroke(s));
+    socket.on('stroke', (s: Stroke) => {
+      // ignore strokes during choice phase (no drawing should occur)
+      if (waitingForChoiceRef.current) return;
+      // When server broadcasts a clear (e.g., new turn/rematch),
+      // also reset local stroke stacks to avoid undo replaying old rounds
+      if (s.type === 'clear') {
+        clearCanvas();
+        localStrokesRef.current = [];
+        opStartsRef.current = [];
+        return;
+      }
+      applyStroke(s);
+    });
     socket.on('canvas_replay', (strokes: Stroke[]) => {
+      // Avoid replaying during waitingForChoice or when not started to prevent ghost visuals
+      if (waitingForChoiceRef.current || !startedRef.current) return;
       clearCanvas();
       strokes.forEach(applyStroke);
     });
@@ -278,18 +354,17 @@ export default function App() {
         wordChoicesTimeoutRef.current = null;
       }, delayMs);
     });
-    // Load profile from localStorage (skip name if invite link is present)
+    // Load profile from localStorage, but do NOT prefill name when visiting via invite link
     try {
       const usp = new URLSearchParams(window.location.search);
       const roomParam = usp.get('room');
+      const savedName = localStorage.getItem('scribal_name');
       if (roomParam) {
         setInviteMode(true);
         setCode(roomParam.toUpperCase());
-        // ensure name starts empty for invite links
-        setName('');
-      } else {
-        const savedName = localStorage.getItem('scribal_name');
-        if (savedName) setName(savedName);
+        // Do not prefill name on invite links; let the user type their own
+      } else if (savedName) {
+        setName(savedName);
       }
       const savedAvatar = localStorage.getItem('scribal_avatar');
       if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
@@ -621,10 +696,13 @@ export default function App() {
 
   function handleMouse(e: React.MouseEvent) {
     if (!state || state.drawerId !== socket.id) return;
+    if (!state.started || state.waitingForChoice) return; // block drawing when game not active
+    const isPrimaryDown = (e.buttons & 1) === 1; // only draw when primary button is pressed
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     if (fillModeRef.current) {
+      if (!isPrimaryDown) return;
       const s: Stroke = { x, y, color: colorRef.current, size: sizeRef.current, type: 'fill' };
       // record operation start
       opStartsRef.current.push(localStrokesRef.current.length);
@@ -633,6 +711,8 @@ export default function App() {
       socket.emit('stroke', s);
       return;
     }
+    // If not currently drawing and mouse button isn't down, ignore hover moves
+    if (!drawing.current && !isPrimaryDown) return;
     const s: Stroke = {
       x, y,
       color: colorRef.current,
@@ -650,7 +730,15 @@ export default function App() {
 
   function handleMouseUp() {
     if (!state || state.drawerId !== socket.id) return;
+    const wasDrawing = drawing.current;
     drawing.current = false;
+    // cancel any pending RAF stroke to avoid delayed ghost draws
+    if (strokeRafRef.current != null) {
+      cancelAnimationFrame(strokeRafRef.current);
+      strokeRafRef.current = null;
+    }
+    strokePendingRef.current = null;
+    if (!wasDrawing) return;
     const endS = { x: 0, y: 0, color: '', size: 0, type: 'end' } as Stroke;
     socket.emit('stroke', endS);
     localStrokesRef.current.push(endS);
@@ -664,11 +752,42 @@ export default function App() {
       strokePendingRef.current = null;
       strokeRafRef.current = null;
       if (!sp) return;
+      // Validate draw is still allowed before applying/emitting to avoid ghost strokes
+      const isDrawer = !!(state && state.drawerId === (socket.id || ''));
+      const canDraw = startedRef.current && !waitingForChoiceRef.current && isDrawer;
+      if (!canDraw) return;
+      // If mouse was released, ignore further 'draw' frames
+      if (!drawing.current && (sp.type === 'draw')) return;
       applyStroke(sp);
       socket.emit('stroke', sp);
       localStrokesRef.current.push(sp);
     });
   }
+
+  // Global cancel guards to prevent lingering strokes when pointer is released outside canvas
+  useEffect(() => {
+    const cancel = () => {
+      drawing.current = false;
+      if (strokeRafRef.current != null) {
+        cancelAnimationFrame(strokeRafRef.current);
+        strokeRafRef.current = null;
+      }
+      strokePendingRef.current = null;
+    };
+    const vis = () => { if (document.hidden) cancel(); };
+    window.addEventListener('mouseup', cancel);
+    window.addEventListener('touchend', cancel);
+    window.addEventListener('pointerup', cancel);
+    document.addEventListener('visibilitychange', vis);
+    window.addEventListener('blur', cancel);
+    return () => {
+      window.removeEventListener('mouseup', cancel);
+      window.removeEventListener('touchend', cancel);
+      window.removeEventListener('pointerup', cancel);
+      document.removeEventListener('visibilitychange', vis);
+      window.removeEventListener('blur', cancel);
+    };
+  }, []);
 
   function clearCanvas() {
     const canvas = canvasRef.current;
@@ -711,8 +830,8 @@ export default function App() {
       localStorage.setItem('scribal_name', name);
       localStorage.setItem('scribal_avatar', JSON.stringify(avatar));
     } catch {}
+    setJoining(true);
     socket.emit('join_room', payload);
-    setJoined(true);
   }
 
   function send() {
@@ -734,22 +853,11 @@ export default function App() {
     setCode(out);
   }
 
-  // Parse ?room=CODE for hostable links (ensure uppercase and invite flag)
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const r = params.get('room');
-      if (r) {
-        setInviteMode(true);
-        setCode(r.toUpperCase());
-      }
-    } catch {}
-  }, []);
-
+  // Shareable invite link
   function copyInvite() {
     const room = state?.code || code;
     if (!room) return;
-    const url = `${window.location.origin}/setup?room=${room}`;
+    const url = `${window.location.origin}?room=${room}`;
     navigator.clipboard.writeText(url);
     showToast('Invite link copied!', 'success');
   }
@@ -799,7 +907,7 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${overlayClosing ? 'reveal-open' : ''}`}>
       <header className="header">
         <div className="logo">Scribal</div>
         <div className="center-word">
@@ -817,11 +925,7 @@ export default function App() {
         </div>
         <div className="meta">
           {state?.started && skProgressTimer(timer, state?.settings.turnSeconds || 1)}
-          <div className="badge">{state ? `Room ${state.code}` : 'Not in room'}</div>
           <button className="icon-btn" title="Settings" onClick={() => setShowSettings(true)}>⚙️</button>
-          {state && (
-            <button className="icon-btn" title="Copy link" onClick={copyInvite}>🔗</button>
-          )}
           <div className="badge">Round: {state?.currentRound ?? 0}</div>
           {state && <button className="invite-btn" onClick={copyInvite}>Invite</button>}
         </div>
@@ -829,36 +933,9 @@ export default function App() {
 
       <aside className="sidebar">
         {!state && (
-          <div className="form">
-            <div className="section-title">Join Room</div>
-            <input placeholder="Your name" value={name} maxLength={9} onChange={e => setName(e.target.value.slice(0, 9))} />
-            <input placeholder="Room code" value={code}
-                   readOnly={inviteMode}
-                   onChange={e => { if (inviteMode) return; setCode(e.target.value.toUpperCase()); }} />
-            {/* Avatar picker */}
-            <div style={{ display:'grid', gap:8 }}>
-              <div className="section-title">Choose Avatar</div>
-              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                <div className="avatar" style={{ background: avatar.bg }}>{avatar.emoji || (name ? name[0].toUpperCase() : '🙂')}</div>
-                <input type="color" value={avatar.bg} onChange={e => setAvatar(v => ({ ...v, bg: e.target.value }))} title="Background color" />
-              </div>
-              <div className="emoji-grid">
-                {EMOJI_SET.map(em => (
-                  <button type="button" key={em} className={`emoji-btn ${avatar.emoji === em ? 'active' : ''}`} onClick={() => setAvatar(v => ({ ...v, emoji: em }))}>{em}</button>
-                ))}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="button-primary" onClick={join} style={{ flex: 1 }}>Join</button>
-              <button onClick={() => generateCode()} style={{ flex: 1 }}>
-                New Code
-              </button>
-            </div>
-            {code && (
-              <div style={{ marginTop: 8 }}>
-                <button className="invite-btn" onClick={copyInvite}>Copy Invite Link</button>
-              </div>
-            )}
+          <div className="list" style={{ padding: 12 }}>
+            <div className="section-title">Welcome</div>
+            <div style={{ color: 'var(--muted)', fontSize: 13 }}>Create or join a room using the overlay.</div>
           </div>
         )}
 
@@ -872,11 +949,12 @@ export default function App() {
                     <div style={{ display:'flex', alignItems:'flex-start', gap:8, width:'100%', justifyContent:'space-between' }}>
                       <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
                         <span className={`rank rank-${idx+1}`}>{idx+1}</span>
-                        <span className="avatar small" style={{ background: p.avatar?.bg || '#eee' }}>{p.avatar?.emoji || (p.name ? p.name[0].toUpperCase() : '🙂')}</span>
+                        <span className={`avatar emoji-only ${participants[p.id]?.speaking ? 'speaking' : ''}`}>{p.avatar?.emoji || (p.name ? p.name[0].toUpperCase() : '🙂')}</span>
                         <div style={{ display:'flex', flexDirection:'column', minWidth:0 }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'nowrap', minWidth:0 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'nowrap', minWidth:0, padding:'0 10px 0 0' }}>
                             <span className={`player-name ${p.guessed ? 'guessed' : ''}`} style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'140px' }}>{p.name}</span>
-                            {p.id === state.drawerId && <span className="brush bounce" title="Drawing">🖌️</span>}
+                            {p.id === (socket.id || '') && <span className="chip" title="This is you">You</span>}
+                            {p.id === state.drawerId && <span className="brush bounce" title="Drawing" style={{ marginLeft: -4 }}>🖌️</span>}
                             {participants[p.id]?.muted ? <span className="muted" title="Muted">🔇</span> : ''}
                           </div>
                           <div className="player-score">{p.score}</div>
@@ -1004,10 +1082,74 @@ export default function App() {
           })}
         </div>
         <div className="chat-input">
+          <button className={`chat-mic-btn ${micOn ? 'on' : 'off'}`} onClick={toggleMic} title={micOn ? 'Mic on' : 'Mic off'} aria-label="Toggle microphone">{micOn ? '🎤' : '🎙️'}</button>
           <input value={input} disabled={!!(state && state.drawerId === socket.id)} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder={state && state.drawerId === socket.id ? 'You are drawing…' : 'Type your guess...'} />
-          <button onClick={send} disabled={!!(state && state.drawerId === socket.id)}>Send</button>
+          <button className="chat-send-btn" onClick={send} disabled={!!(state && state.drawerId === socket.id)} title="Send" aria-label="Send">✈️</button>
         </div>
       </section>
+
+      {/* Start Overlay: shown until user joins a room */}
+      {(!joined || !state) && (
+        <div className={`start-overlay ${overlayClosing || joined ? 'fade-out' : ''}`}>
+          <div className="start-card funky-card">
+            <div className="brand-hero" aria-hidden="true">Scribal</div>
+            <div className="start-title">{inviteMode ? 'Join Game' : 'Create Game'}</div>
+            <div className="start-sub">Play from a single link. No separate setup.</div>
+            <div className="form start-form" style={{ maxWidth: 560 }}>
+              <div className="row">
+                <input className="input" placeholder="Your name" value={name} maxLength={9} onChange={e => setName(e.target.value.slice(0, 9))} />
+              </div>
+              <div className="row two">
+                <input className={`input code ${inviteMode ? 'readonly' : ''}`} placeholder="Room code" value={code}
+                       readOnly={inviteMode}
+                       onChange={e => { if (inviteMode) return; setCode(e.target.value.toUpperCase()); }} />
+                <button
+                  className="btn new-code"
+                  onClick={() => generateCode()}
+                  title={inviteMode ? 'Disabled when joining by link' : 'Generate new code'}
+                  disabled={inviteMode}
+                >
+                  New Code
+                </button>
+              </div>
+              <div className="row avatar-row">
+                <div className="section-title">Choose Avatar</div>
+                <div className="avatar-line">
+                  <span className={`avatar emoji-only preview`} title="Your avatar">
+                    {avatar.emoji || (name ? name[0].toUpperCase() : '🙂')}
+                  </span>
+                </div>
+                <div className="emoji-grid">
+                  {EMOJI_SET.map(em => (
+                    <button type="button" key={em} className={`emoji-btn ${avatar.emoji === em ? 'active' : ''}`} onClick={() => setAvatar(v => ({ ...v, emoji: em }))}>{em}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="start-actions">
+                {state && <button type="button" className="btn ghost" onClick={copyInvite} title="Copy invite link">Copy Invite</button>}
+                <button
+                  className="btn btn-primary go"
+                  disabled={!name || !code || joining}
+                  onClick={() => {
+                    if (!name || !code) { showToast('Enter name and room code', 'error'); return; }
+                    // Optimistic UI: close overlay instantly, mark as joined
+                    setOverlayClosing(true);
+                    setJoined(true);
+                    join();
+                  }}
+                >
+                  {joining ? 'Joining…' : (inviteMode ? 'Join Game' : 'Create Game')}
+                </button>
+              </div>
+            </div>
+            <div className="start-deco">
+              <div className="bubble b1" />
+              <div className="bubble b2" />
+              <div className="bubble b3" />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Game Over Modal with podium and rematch */}
       {gameOver && (
@@ -1021,7 +1163,7 @@ export default function App() {
                 const sorted = [...gameOver.players].sort((a,b)=> b.total - a.total);
                 const top = sorted.slice(0,3);
                 return (
-                  <div className="podium podium-wrap">
+                  <div className="podium podium-wrap no-border-avatars">
                     {top[1] && (
                       <div className="podium-2">
                         <div className="avatar" style={{ background: top[1].avatar?.bg || '#eee' }}>{top[1].avatar?.emoji || (top[1].name[0] || '🙂')}</div>
@@ -1081,7 +1223,7 @@ export default function App() {
             </div>
             <div style={{ display:'grid', gap:10 }}>
               <div><strong>Correct word:</strong> {turnSummary.word || '(unknown)'}</div>
-              <div className="list" style={{ padding:12 }}>
+              <div className="list no-border-avatars" style={{ padding:12 }}>
                 {[...turnSummary.points].sort((a,b)=> b.delta - a.delta).map(p => (
                   <div key={p.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 4px' }}>
                     <div style={{ display:'flex', alignItems:'center', gap:8 }}>
@@ -1108,21 +1250,6 @@ export default function App() {
 
       {/* Quickbar removed per request; reactions and quick chats are in the bottom-center panel for guessers. */}
 
-      {/* Voice Dock */}
-      <div className="voice-dock">
-        <div className="voice-left">
-          <button className="voice-btn" onClick={toggleMic}>{micOn ? '🎤 Mic On' : '🎙️ Mic Off'}</button>
-          <span className="voice-status">{micOn ? 'You are connected' : 'Click to enable voice'}</span>
-        </div>
-        <div className="voice-participants">
-          {Object.entries(participants).filter(([id]) => id !== socket.id).map(([id, p]) => (
-            <div key={id} className={`voice-pill ${p.speaking ? 'speaking' : ''}`} title={p.name}>
-              <span className="dot" />
-              <span>{p.name}</span>
-            </div>
-          ))}
-        </div>
-      </div>
 
       {/* Word Choice Modal for Drawer */}
       {state && state.drawerId === socket.id && wordChoices.length > 0 && (

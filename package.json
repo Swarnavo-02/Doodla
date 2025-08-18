@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm:dev -w server\" \"npm:dev -w client\"",
+    "dev:single": "npm:dev -w server",
     "install:all": "npm install -w server && npm install -w client",
     "build": "npm run build -w client && npm run build -w server",
     "start": "node server/dist/index.js",

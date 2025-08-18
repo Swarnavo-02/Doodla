@@ -16,6 +16,9 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const rooms = new RoomManager();
+// Voice mesh state (compat with provided spec)
+const voiceUsers: Map<string, Set<string>> = new Map(); // roomId -> socket ids
+const speakingState: Map<string, Set<string>> = new Map(); // roomId -> usernames
 
 io.on('connection', (socket) => {
   let currentRoom: string | null = null;
@@ -65,18 +68,42 @@ io.on('connection', (socket) => {
     if (!currentRoom) return;
     // Notify room that this user is available for voice; others can initiate offers
     socket.to(currentRoom).emit('voice_user_joined', socket.id);
+    // Compat: also add to voiceUsers and broadcast voice-users list
+    const set = voiceUsers.get(currentRoom) || new Set<string>();
+    set.add(socket.id);
+    voiceUsers.set(currentRoom, set);
+    io.to(currentRoom).emit('voice-users', Array.from(set));
   });
 
   socket.on('voice_offer', ({ to, sdp }: { to: string; sdp: RTCSessionDescriptionInit }) => {
     io.to(to).emit('voice_offer', { from: socket.id, sdp });
   });
+  socket.on('voice-offer', ({ to, offer }: { to: string; offer: RTCSessionDescriptionInit }) => {
+    io.to(to).emit('voice-offer', { from: socket.id, offer });
+  });
 
   socket.on('voice_answer', ({ to, sdp }: { to: string; sdp: RTCSessionDescriptionInit }) => {
     io.to(to).emit('voice_answer', { from: socket.id, sdp });
   });
+  socket.on('voice-answer', ({ to, answer }: { to: string; answer: RTCSessionDescriptionInit }) => {
+    io.to(to).emit('voice-answer', { from: socket.id, answer });
+  });
 
   socket.on('voice_ice', ({ to, candidate }: { to: string; candidate: RTCIceCandidateInit }) => {
     io.to(to).emit('voice_ice', { from: socket.id, candidate });
+  });
+  socket.on('voice-ice', ({ to, candidate }: { to: string; candidate: RTCIceCandidateInit }) => {
+    io.to(to).emit('voice-ice', { from: socket.id, candidate });
+  });
+
+  // Speaking state per spec
+  socket.on('speaking', ({ roomId, username, isSpeaking }: { roomId?: string; username: string; isSpeaking: boolean }) => {
+    const r = roomId || currentRoom;
+    if (!r || !username) return;
+    const set = speakingState.get(r) || new Set<string>();
+    if (isSpeaking) set.add(username); else set.delete(username);
+    speakingState.set(r, set);
+    io.to(r).emit('speaking-users', Array.from(set));
   });
 
   socket.on('voice_toggle', ({ muted }: { muted: boolean }) => {
@@ -88,6 +115,36 @@ io.on('connection', (socket) => {
   socket.on('voice_leave', () => {
     if (!currentRoom) return;
     socket.to(currentRoom).emit('voice_user_left', socket.id);
+    // Compat: remove from voiceUsers and broadcast
+    const set = voiceUsers.get(currentRoom);
+    if (set) {
+      set.delete(socket.id);
+      io.to(currentRoom).emit('voice-users', Array.from(set));
+      if (set.size === 0) voiceUsers.delete(currentRoom);
+    }
+  });
+
+  // Compat aliases using hyphenated event names per spec
+  socket.on('voice-join', (roomId: string) => {
+    // Allow explicit room id; default to currentRoom
+    const r = roomId || currentRoom;
+    if (!r) return;
+    socket.join(r);
+    const set = voiceUsers.get(r) || new Set<string>();
+    set.add(socket.id);
+    voiceUsers.set(r, set);
+    io.to(r).emit('voice-users', Array.from(set));
+  });
+
+  socket.on('voice-leave', (roomId?: string) => {
+    const r = roomId || currentRoom;
+    if (!r) return;
+    const set = voiceUsers.get(r);
+    if (set) {
+      set.delete(socket.id);
+      io.to(r).emit('voice-users', Array.from(set));
+      if (set.size === 0) voiceUsers.delete(r);
+    }
   });
 
   socket.on('start_game', () => {
@@ -129,7 +186,8 @@ io.on('connection', (socket) => {
   socket.on('stroke', (stroke: Stroke) => {
     if (!currentRoom || !player) return;
     const state = rooms.createOrGetRoom(currentRoom);
-    if (state.drawerId !== player.id && stroke.type !== 'clear') return; // only drawer can draw
+    // only drawer can draw, and only after the word is chosen (not during choice phase)
+    if ((!state.started || state.waitingForChoice || state.drawerId !== player.id) && stroke.type !== 'clear') return;
     rooms.applyStroke(currentRoom, stroke);
     socket.to(currentRoom).emit('stroke', stroke);
   });
@@ -186,6 +244,19 @@ io.on('connection', (socket) => {
       socket.to(currentRoom).emit('voice_user_left', socket.id);
       rooms.leaveRoom(currentRoom, player.id);
       io.to(currentRoom).emit('state_update', rooms.createOrGetRoom(currentRoom));
+      // clean voice presence
+      const vu = voiceUsers.get(currentRoom);
+      if (vu) {
+        vu.delete(socket.id);
+        io.to(currentRoom).emit('voice-users', Array.from(vu));
+        if (vu.size === 0) voiceUsers.delete(currentRoom);
+      }
+      const sp = speakingState.get(currentRoom);
+      if (sp && player?.name) {
+        sp.delete(player.name);
+        io.to(currentRoom).emit('speaking-users', Array.from(sp));
+        if (sp.size === 0) speakingState.delete(currentRoom);
+      }
     }
   });
 
@@ -196,6 +267,8 @@ io.on('connection', (socket) => {
     rooms.rematch(currentRoom);
     const fresh = rooms.createOrGetRoom(currentRoom);
     io.to(currentRoom).emit('state_update', fresh);
+    // ensure everyone clears canvas immediately on rematch
+    io.to(currentRoom).emit('stroke', { x: 0, y: 0, color: '', size: 0, type: 'clear' });
     const hostName = fresh.players.find(p => p.id === fresh.hostId)?.name || 'Host';
     io.to(currentRoom).emit('system_message', `Rematch ready! ${hostName} is the new host. Press Start Game to begin.`);
   });
@@ -257,14 +330,43 @@ setInterval(() => {
   }
 }, 1000);
 
-// Serve built client when available (single-origin deploy/dev)
-try {
-  const distPath = path.resolve(__dirname, '../../client/dist');
-  app.use(express.static(distPath));
-  // SPA fallback
-  app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
-} catch {
-  app.get('/', (_req, res) => res.send('Scribal server running'));
+// In production, serve built client; in development, mount Vite middleware to serve client
+if (process.env.NODE_ENV === 'production') {
+  try {
+    const distPath = path.resolve(__dirname, '../../client/dist');
+    app.use(express.static(distPath));
+    // SPA fallback
+    app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+  } catch {
+    app.get('/', (_req, res) => res.send('Scribal server running'));
+  }
+} else {
+  // Vite dev middleware integration to serve the client from the same Express server
+  (async () => {
+    try {
+      const { createServer } = await import('vite');
+      const root = path.resolve(__dirname, '../../client');
+      const vite = await createServer({
+        root,
+        server: { middlewareMode: true },
+        appType: 'spa'
+      });
+      app.use(vite.middlewares);
+      // SPA fallback via Vite html transform
+      app.use('*', async (req, res, next) => {
+        try {
+          const url = req.originalUrl;
+          const html = await vite.transformIndexHtml(url, await (await import('fs/promises')).readFile(path.join(root, 'index.html'), 'utf-8'));
+          res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
+        } catch (e) {
+          next(e);
+        }
+      });
+    } catch (e) {
+      console.error('Failed to start Vite middleware:', e);
+      app.get('/', (_req, res) => res.send('Scribal server running (dev). Failed to init Vite.'));
+    }
+  })();
 }
 
 server.listen(PORT, () => {

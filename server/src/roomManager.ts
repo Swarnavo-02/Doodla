@@ -232,16 +232,15 @@ export class RoomManager {
     return room;
   }
 
-  // Prepare rematch: reset scores, rounds, indices; rotate host to next player.
+  // Prepare rematch: reset scores, rounds, indices; keep the same host.
   rematch(code: string): GameState | null {
     const room = this.rooms.get(code);
     if (!room) return null;
     if (room.players.length === 0) return room;
-    // rotate host to next player after current host
-    const ids = room.players.map(p => p.id);
-    const cur = room.hostId ? ids.indexOf(room.hostId) : -1;
-    const nextIdx = cur >= 0 ? (cur + 1) % ids.length : 0;
-    room.hostId = ids[nextIdx] || room.players[0].id;
+    // keep current host so they can start the next game
+    if (!room.hostId) {
+      room.hostId = room.players[0]?.id || null;
+    }
     // reset scores and state
     room.players.forEach(p => { p.score = 0; p.guessed = false; });
     room.started = false;

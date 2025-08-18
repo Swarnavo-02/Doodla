@@ -14,14 +14,17 @@ A real-time drawing and guessing game built with React, Vite, Node.js, Express, 
    npm run install:all
    ```
 
-2. Run both apps in dev mode:
+2. Single URL dev (recommended):
+   ```bash
+   npm run dev:single
+   ```
+   Open: http://localhost:3001 (Express serves Vite via middleware)
+
+3. Classic two-process dev (optional):
    ```bash
    npm run dev
    ```
-
-3. Open the client: http://localhost:5173
-
-Server runs on http://localhost:3001
+   Open: http://localhost:5173 (client) — server: http://localhost:3001
 
 ## Features (MVP)
 - Create/join rooms with codes
