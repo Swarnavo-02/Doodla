@@ -279,6 +279,12 @@ body{margin:0;/* playful doodle-like pattern */
 .quick-reactions{display:flex;gap:6px}
 .quick-chats{display:flex;gap:6px}
 
+/* Host settings footer action */
+.host-settings-actions{display:flex;justify-content:center;align-items:center;margin-top:6px}
+.start-big{width:100%;padding:14px 18px;border-radius:14px;border:1px solid #7c5cff;background:linear-gradient(180deg,#7c5cff,#5aa7ff);color:#fff;font-weight:900;font-family:Nunito,system-ui;font-size:18px;letter-spacing:.3px;cursor:pointer;box-shadow:0 10px 22px rgba(124,92,255,.28);transition:transform .12s ease, filter .12s ease, box-shadow .12s ease}
+.start-big:hover{filter:brightness(1.03);transform:translateY(-1px)}
+.start-big:active{transform:translateY(0)}
+
 /* Start overlay (create/join) */
 .start-overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:
   radial-gradient(120vw 120vh at 50% 50%, rgba(2,6,23,0) 0%, rgba(2,6,23,.14) 60%, rgba(2,6,23,.24) 100%),

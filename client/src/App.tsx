@@ -966,11 +966,7 @@ export default function App() {
               </div>
             </div>
 
-            <div>
-              {state && state.hostId === socket.id && !state.started && (
-                <button className="button-primary" onClick={startGame}>Start Game</button>
-              )}
-            </div>
+            {/* Start button moved into Host Settings panel footer */}
 
             {/* Host Settings */}
             {state && state.hostId === socket.id && !state.started && (
@@ -1007,6 +1003,10 @@ export default function App() {
                       {[2,3,5].map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </label>
+                  {/* Footer action: big Start Game button */}
+                  <div className="host-settings-actions" style={{ marginTop: 6 }}>
+                    <button className="start-big" onClick={startGame}>Start Game</button>
+                  </div>
                 </div>
               </div>
             )}
