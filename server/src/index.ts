@@ -338,7 +338,7 @@ if (process.env.NODE_ENV === 'production') {
     // SPA fallback
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   } catch {
-    app.get('/', (_req, res) => res.send('Scribal server running'));
+    app.get('/', (_req, res) => res.send('Zoodle server running'));
   }
 } else {
   // Vite dev middleware integration to serve the client from the same Express server
@@ -364,7 +364,7 @@ if (process.env.NODE_ENV === 'production') {
       });
     } catch (e) {
       console.error('Failed to start Vite middleware:', e);
-      app.get('/', (_req, res) => res.send('Scribal server running (dev). Failed to init Vite.'));
+      app.get('/', (_req, res) => res.send('Zoodle server running (dev). Failed to init Vite.'));
     }
   })();
 }

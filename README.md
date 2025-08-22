@@ -1,4 +1,4 @@
-# Scribal (Skribbl.io-like clone)
+# Zoodle (Skribbl.io-like clone)
 
 A real-time drawing and guessing game built with React, Vite, Node.js, Express, and Socket.IO.
 
@@ -31,4 +31,3 @@ A real-time drawing and guessing game built with React, Vite, Node.js, Express, 
 - Real-time canvas drawing sync
 - Chat with guess detection
 - Game loop: rounds, timers, word choice, scoring
-

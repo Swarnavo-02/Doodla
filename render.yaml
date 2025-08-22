@@ -1,7 +1,7 @@
 version: 1
 services:
   - type: web
-    name: scribal
+    name: zoodle
     env: node
     plan: free
     buildCommand: npm ci && npm run build

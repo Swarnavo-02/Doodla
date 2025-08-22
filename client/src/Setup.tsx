@@ -13,7 +13,7 @@ export default function Setup() {
 
   useEffect(() => {
     try {
-      const savedName = localStorage.getItem('scribal_name');
+      const savedName = localStorage.getItem('zoodle_name');
       if (savedName) setName(savedName);
 
       const room = searchParams.get('room');
@@ -24,7 +24,7 @@ export default function Setup() {
         if (!savedName) setName('');
       }
 
-      const savedAvatar = localStorage.getItem('scribal_avatar');
+      const savedAvatar = localStorage.getItem('zoodle_avatar');
       if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
     } catch {}
   }, [searchParams]);
@@ -38,8 +38,8 @@ export default function Setup() {
   function proceed() {
     if (!name || !code) return;
     try {
-      localStorage.setItem('scribal_name', name);
-      localStorage.setItem('scribal_avatar', JSON.stringify(avatar));
+      localStorage.setItem('zoodle_name', name);
+      localStorage.setItem('zoodle_avatar', JSON.stringify(avatar));
     } catch {}
     navigate(`/room?room=${encodeURIComponent(code)}`);
   }
@@ -47,7 +47,7 @@ export default function Setup() {
   return (
     <div className="app" style={{ minHeight: '100vh', display: 'grid', gridTemplateRows: 'auto 1fr' }}>
       <header className="header">
-        <div className="branding">Scribal</div>
+        <div className="branding">Zoodle</div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={generateCode}>New Code</button>
         </div>

@@ -358,7 +358,7 @@ export default function App() {
     try {
       const usp = new URLSearchParams(window.location.search);
       const roomParam = usp.get('room');
-      const savedName = localStorage.getItem('scribal_name');
+      const savedName = localStorage.getItem('zoodle_name');
       if (roomParam) {
         setInviteMode(true);
         setCode(roomParam.toUpperCase());
@@ -366,7 +366,7 @@ export default function App() {
       } else if (savedName) {
         setName(savedName);
       }
-      const savedAvatar = localStorage.getItem('scribal_avatar');
+      const savedAvatar = localStorage.getItem('zoodle_avatar');
       if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
     } catch {}
     return () => {
@@ -827,8 +827,8 @@ export default function App() {
     if (!name || !code) { showToast('Enter name and room code', 'error'); return; }
     const payload = { code, name: (name || '').slice(0, 9), avatar };
     try {
-      localStorage.setItem('scribal_name', name);
-      localStorage.setItem('scribal_avatar', JSON.stringify(avatar));
+      localStorage.setItem('zoodle_name', name);
+      localStorage.setItem('zoodle_avatar', JSON.stringify(avatar));
     } catch {}
     setJoining(true);
     socket.emit('join_room', payload);
@@ -909,7 +909,7 @@ export default function App() {
   return (
     <div className={`app ${overlayClosing ? 'reveal-open' : ''}`}>
       <header className="header">
-        <div className="logo">Scribal</div>
+        <div className="logo">Zoodle</div>
         <div className="center-word">
           <div className="center-stack">
             <div className="center-row">
@@ -1092,7 +1092,7 @@ export default function App() {
       {(!joined || !state) && (
         <div className={`start-overlay ${overlayClosing || joined ? 'fade-out' : ''}`}>
           <div className="start-card funky-card">
-            <div className="brand-hero" aria-hidden="true">Scribal</div>
+            <div className="brand-hero" aria-hidden="true">Zoodle</div>
             <div className="start-title">{inviteMode ? 'Join Game' : 'Create Game'}</div>
             <div className="start-sub">Play from a single link. No separate setup.</div>
             <div className="form start-form" style={{ maxWidth: 560 }}>
